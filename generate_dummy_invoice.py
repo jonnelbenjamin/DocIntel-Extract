@@ -1,7 +1,7 @@
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
-file_name = "dummy_invoice.pdf"
+file_name = "./docs/dummy_invoice.pdf"
 
 c = canvas.Canvas(file_name, pagesize=letter)
 width, height = letter

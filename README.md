@@ -57,6 +57,6 @@ Where to Find These Values
 - AOAI_EMBED_DEPLOYMENT	
     > Name of your embedding deployment (ex: text-embedding-3-large)
 
-![UI](image.png)
+![UI](./photos/image.png)
 
-![Answer](image-1.png)
+![Answer](./photos/image-1.png)
