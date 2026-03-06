@@ -74,8 +74,6 @@ def main(pdf_path: str, source_name: str):
     batch: list[dict] = []
     uploaded = 0
     chunk_no = 0
-    import pdb
-    pdb.set_trace()
     # Make fewer chunks for speed/cost (bigger chunk size)
     MAX_CHARS = 6000
     OVERLAP = 300
