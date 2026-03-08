@@ -8,11 +8,9 @@ from utils import load_env, must_get, chunk_text
 from docintel import extract_pdf_text_by_page
 from rag import get_clients, embed_text
 
-
 def stable_id(source: str, page: int, chunk_idx: int, text: str) -> str:
     h = hashlib.sha256(f"{source}|{page}|{chunk_idx}|{text}".encode("utf-8")).hexdigest()
     return h[:32]
-
 
 def upload_batch(search: SearchClient, batch: list[dict]) -> None:
     if not batch:
@@ -115,7 +113,6 @@ def main(pdf_path: str, source_name: str):
         uploaded += len(batch)
 
     print(f"🎉 Done. Total uploaded chunks: {uploaded}", flush=True)
-
 
 if __name__ == "__main__":
     # Keep your simple default
