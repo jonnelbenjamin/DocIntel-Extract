@@ -7,3 +7,6 @@ openai==1.40.6
 tiktoken==0.7.0
 python-dotenv
 reportlab
+faker 
+azure-storage-file-datalake
+azure-storage-blob
