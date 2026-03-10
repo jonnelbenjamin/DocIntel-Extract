@@ -1,0 +1,5 @@
+# Exclude environment files and secrets from Copilot codebase context
+.env
+.env.*
+**/.env
+**/.env.*

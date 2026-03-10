@@ -1,5 +1,6 @@
 import time
 import hashlib
+import json
 from pathlib import Path
 
 import streamlit as st
@@ -12,9 +13,14 @@ from azure.storage.filedatalake import DataLakeServiceClient
 from utils import must_get, chunk_text
 from docintel import extract_pdf_text_by_page
 from rag import get_clients, embed_text, chat_answer_with_citations
+from eval_harness import load_eval_questions, run_eval_case, summarize_results
 
 ENV_PATH = Path(__file__).resolve().parent / ".env"
 load_dotenv(dotenv_path=ENV_PATH)
+EVAL_DATASET_PATHS = {
+    "Travel Advisory": Path(__file__).resolve().parent / "data" / "eval_questions.json",
+    "Invoice": Path(__file__).resolve().parent / "data" / "eval_questions_invoice.json",
+}
 
 
 def stable_id(source: str, page: int, chunk_idx: int, text: str) -> str:
@@ -117,6 +123,58 @@ def index_pdf_bytes(
     return True
 
 
+def retrieve_chunks(
+    search: SearchClient,
+    question: str,
+    qvec: list[float],
+    top_k: int,
+    retrieval_mode: str,
+    use_semantic: bool,
+    semantic_config_name: str,
+    use_source_filter: bool,
+    active_source: str,
+) -> list[dict]:
+    """
+    Build and execute Azure AI Search query settings for vector/hybrid and optional semantic ranking.
+    """
+    vq = VectorizedQuery(
+        vector=qvec,
+        k_nearest_neighbors=top_k,
+        fields="contentVector",
+    )
+
+    search_kwargs = {
+        "search_text": question if retrieval_mode == "Hybrid" else "",
+        "vector_queries": [vq],
+        "select": ["content", "source", "page"],
+        "top": top_k,
+    }
+
+    if use_source_filter and active_source:
+        safe_source = active_source.replace("'", "''")
+        search_kwargs["filter"] = f"source eq '{safe_source}'"
+
+    if use_semantic and retrieval_mode == "Hybrid":
+        search_kwargs["query_type"] = "semantic"
+        search_kwargs["semantic_configuration_name"] = semantic_config_name
+
+    results = search.search(**search_kwargs)
+
+    retrieved = []
+    for r in results:
+        retrieved.append(
+            {
+                "content": r["content"],
+                "source": r.get("source", "unknown"),
+                "page": r.get("page", None),
+                "search_score": r.get("@search.score", None),
+                "reranker_score": r.get("@search.reranker_score", None),
+            }
+        )
+
+    return retrieved
+
+
 def main():
     st.set_page_config(page_title="DocIntel Extract (RAG)", layout="wide")
     st.title("📄 DocIntel Extract — RAG POC")
@@ -210,11 +268,34 @@ def main():
     with col_right:
         st.subheader("2) Ask questions (RAG)")
 
+        with st.expander("AI-102 Retrieval Lab", expanded=False):
+            st.caption(
+                "Practice vector vs hybrid retrieval and optional semantic ranking in Azure AI Search."
+            )
+
         question = st.text_input(
             "Question",
             value="What is the invoice number and total amount?",
         )
         top_k = st.slider("Top K chunks", 1, 10, 5)
+        retrieval_mode = st.radio(
+            "Retrieval mode",
+            ["Vector", "Hybrid"],
+            horizontal=True,
+            help="Vector uses embeddings only. Hybrid combines keyword + vector retrieval.",
+        )
+
+        use_semantic = st.checkbox(
+            "Use semantic ranking (Hybrid only)",
+            value=False,
+            disabled=retrieval_mode != "Hybrid",
+        )
+        semantic_config_name = st.text_input(
+            "Semantic configuration name",
+            value="default",
+            disabled=not use_semantic,
+            help="Must match your Azure AI Search index semantic configuration.",
+        )
 
         active_source = st.session_state.get("active_source", "")
         use_source_filter = st.checkbox(
@@ -230,33 +311,25 @@ def main():
                 qvec = embed_text(aoai, EMBED_DEP, question)
 
             with st.spinner("Retrieving from Azure AI Search..."):
-                vq = VectorizedQuery(
-                    vector=qvec,
-                    k_nearest_neighbors=top_k,
-                    fields="contentVector",
-                )
-
-                search_kwargs = {
-                    "search_text": "",
-                    "vector_queries": [vq],
-                    "select": ["content", "source", "page"],
-                }
-
-                if use_source_filter and active_source:
-                    safe_source = active_source.replace("'", "''")
-                    search_kwargs["filter"] = f"source eq '{safe_source}'"
-
-                results = search.search(**search_kwargs)
-
-                retrieved = []
-                for r in results:
-                    retrieved.append(
-                        {
-                            "content": r["content"],
-                            "source": r.get("source", "unknown"),
-                            "page": r.get("page", None),
-                        }
+                try:
+                    retrieved = retrieve_chunks(
+                        search=search,
+                        question=question,
+                        qvec=qvec,
+                        top_k=top_k,
+                        retrieval_mode=retrieval_mode,
+                        use_semantic=use_semantic,
+                        semantic_config_name=semantic_config_name,
+                        use_source_filter=use_source_filter,
+                        active_source=active_source,
                     )
+                except Exception as e:
+                    st.error(f"Search query failed: {e}")
+                    if use_semantic:
+                        st.info(
+                            "Tip: Verify your semantic configuration name exists in the index and try again."
+                        )
+                    return
 
             if not retrieved:
                 st.warning("No results retrieved. Index a document first.")
@@ -270,6 +343,154 @@ def main():
 
             with st.expander("Retrieved chunks (debug)"):
                 st.json(retrieved)
+
+    st.divider()
+    st.subheader("3) Evaluate Retrieval + Answers (AI-102)")
+    st.caption(
+        "Run a fixed question set across retrieval modes to measure answer correctness, retrieval quality, citations, and latency."
+    )
+
+    eval_profile = st.selectbox(
+        "Evaluation domain profile",
+        list(EVAL_DATASET_PATHS.keys()),
+        index=0,
+        help="Pick the question set that matches your document type.",
+    )
+    eval_dataset_path = EVAL_DATASET_PATHS[eval_profile]
+    st.caption(f"Using dataset: {eval_dataset_path.name}")
+
+    try:
+        eval_questions = load_eval_questions(eval_dataset_path)
+    except Exception as e:
+        st.error(f"Could not load evaluation dataset: {e}")
+        return
+
+    col_eval_left, col_eval_right = st.columns([1, 1])
+    with col_eval_left:
+        selected_modes = st.multiselect(
+            "Modes to evaluate",
+            ["Vector", "Hybrid", "Hybrid+Semantic"],
+            default=["Vector", "Hybrid", "Hybrid+Semantic"],
+        )
+        eval_top_k = st.slider("Evaluation Top K", 1, 10, 5)
+
+    with col_eval_right:
+        eval_semantic_config = st.text_input(
+            "Evaluation semantic configuration",
+            value="default",
+            help="Used for Hybrid+Semantic mode.",
+        )
+        max_questions = st.slider(
+            "Number of evaluation questions",
+            min_value=1,
+            max_value=len(eval_questions),
+            value=min(5, len(eval_questions)),
+        )
+
+    if "eval_last_rows" not in st.session_state:
+        st.session_state["eval_last_rows"] = []
+    if "eval_last_summary" not in st.session_state:
+        st.session_state["eval_last_summary"] = []
+
+    if st.button("Run evaluation harness"):
+        if not selected_modes:
+            st.warning("Select at least one mode to evaluate.")
+            return
+
+        rows = []
+        questions_to_run = eval_questions[:max_questions]
+        total_runs = len(questions_to_run) * len(selected_modes)
+        progress = st.progress(0, text="Starting evaluation...")
+        done = 0
+
+        def build_retriever(mode_name: str):
+            retrieval_mode = "Vector" if mode_name == "Vector" else "Hybrid"
+            use_semantic = mode_name == "Hybrid+Semantic"
+
+            def _retrieve(question_text: str, qvec: list[float]) -> list[dict]:
+                return retrieve_chunks(
+                    search=search,
+                    question=question_text,
+                    qvec=qvec,
+                    top_k=eval_top_k,
+                    retrieval_mode=retrieval_mode,
+                    use_semantic=use_semantic,
+                    semantic_config_name=eval_semantic_config,
+                    use_source_filter=False,
+                    active_source="",
+                )
+
+            return _retrieve
+
+        embed_fn = lambda q: embed_text(aoai, EMBED_DEP, q)
+        answer_fn = lambda q, retrieved: chat_answer_with_citations(aoai, CHAT_DEP, q, retrieved)
+
+        for q in questions_to_run:
+            for mode_name in selected_modes:
+                try:
+                    row = run_eval_case(
+                        question=q,
+                        mode_name=mode_name,
+                        embed_fn=embed_fn,
+                        retrieve_fn=build_retriever(mode_name),
+                        answer_fn=answer_fn,
+                    )
+                    rows.append(row)
+                except Exception as e:
+                    rows.append(
+                        {
+                            "question_id": q.id,
+                            "mode": mode_name,
+                            "question": q.question,
+                            "answer": f"ERROR: {e}",
+                            "answer_has_citation": False,
+                            "answer_keyword_ratio": 0.0,
+                            "answer_correct": False,
+                            "retrieval_keyword_ratio": 0.0,
+                            "retrieval_hit": False,
+                            "retrieved_chunks": 0,
+                            "latency_retrieval_ms": 0,
+                            "latency_answer_ms": 0,
+                            "latency_total_ms": 0,
+                            "notes": "Run failed. Check mode configuration and service health.",
+                        }
+                    )
+
+                done += 1
+                progress.progress(
+                    int((done / total_runs) * 100),
+                    text=f"Completed {done}/{total_runs} runs",
+                )
+
+        st.session_state["eval_last_rows"] = rows
+        st.session_state["eval_last_summary"] = summarize_results(rows)
+        st.success("Evaluation run complete.")
+
+    last_rows = st.session_state.get("eval_last_rows", [])
+    last_summary = st.session_state.get("eval_last_summary", [])
+
+    if not last_rows:
+        st.info("No evaluation results yet. Run the harness to populate summary and detailed rows.")
+    else:
+        st.markdown("### Evaluation Summary")
+        if not last_summary:
+            st.warning("Summary is empty. Check per-question rows for errors.")
+        else:
+            st.dataframe(last_summary, use_container_width=True)
+
+        failures = sum(1 for r in last_rows if str(r.get("answer", "")).startswith("ERROR:"))
+        if failures:
+            st.warning(f"{failures} run(s) failed. Review the 'answer' field in detailed rows.")
+
+        st.markdown("### Per-Question Results")
+        st.dataframe(last_rows, use_container_width=True)
+
+        st.download_button(
+            "Download evaluation results (JSON)",
+            data=json.dumps(last_rows, indent=2),
+            file_name="eval_results.json",
+            mime="application/json",
+        )
 
 
 if __name__ == "__main__":

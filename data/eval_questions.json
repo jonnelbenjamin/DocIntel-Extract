@@ -1,0 +1,58 @@
+[
+  {
+    "id": "country_and_level",
+    "question": "What country is this advisory for and what is its advisory level?",
+    "expected_keywords": ["country", "advisory level", "level"],
+    "retrieval_keywords": ["country", "advisory level", "level"],
+    "notes": "Core extraction of country and risk level fields."
+  },
+  {
+    "id": "reasons_summary",
+    "question": "What reasons are listed for this travel warning?",
+    "expected_keywords": ["reasons", "crime", "terrorism", "civil unrest", "health risks", "natural disaster"],
+    "retrieval_keywords": ["reasons", "crime", "terrorism", "civil unrest", "health risks", "natural disaster"],
+    "notes": "Checks retrieval from the dedicated reasons section."
+  },
+  {
+    "id": "notes_extraction",
+    "question": "Summarize the additional notes for travelers.",
+    "expected_keywords": ["additional notes", "travel"],
+    "retrieval_keywords": ["additional notes"],
+    "notes": "Tests retrieval from narrative paragraph content."
+  },
+  {
+    "id": "risk_level_interpretation",
+    "question": "Is this advisory suggesting normal precautions, increased caution, reconsider travel, or do not travel?",
+    "expected_keywords": ["level", "precautions", "caution", "reconsider travel", "do not travel"],
+    "retrieval_keywords": ["advisory level", "level"],
+    "notes": "Checks whether the answer grounds to one of the four supported level labels."
+  },
+  {
+    "id": "paraphrase_query",
+    "question": "Why might visiting this destination be unsafe right now?",
+    "expected_keywords": ["reasons", "crime", "terrorism", "civil unrest", "health risks", "natural disaster"],
+    "retrieval_keywords": ["reasons", "crime", "terrorism", "civil unrest", "health risks", "natural disaster"],
+    "notes": "Paraphrase-heavy question to compare vector versus hybrid behavior."
+  },
+  {
+    "id": "section_presence",
+    "question": "Does the advisory include an Additional Notes section, and what does it mention?",
+    "expected_keywords": ["additional notes"],
+    "retrieval_keywords": ["additional notes"],
+    "notes": "Verifies retrieval of section headers and nearby content."
+  },
+  {
+    "id": "header_confirmation",
+    "question": "What type of document is this?",
+    "expected_keywords": ["travel advisory"],
+    "retrieval_keywords": ["travel advisory"],
+    "notes": "Simple grounding check against the document title/header."
+  },
+  {
+    "id": "multi_field_grounding",
+    "question": "Provide the country, advisory level, and two reasons in one grounded answer with citations.",
+    "expected_keywords": ["country", "advisory level", "reasons"],
+    "retrieval_keywords": ["country", "advisory level", "reasons"],
+    "notes": "Comprehensive field aggregation benchmark."
+  }
+]

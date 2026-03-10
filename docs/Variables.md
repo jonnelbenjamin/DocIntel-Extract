@@ -13,6 +13,8 @@ DOCINTEL_KEY=your_document_intelligence_key
 SEARCH_ENDPOINT=your_ai_search_endpoint
 SEARCH_ADMIN_KEY=your_ai_search_admin_key
 SEARCH_INDEX_NAME=your_ai_search_index_name
+# Optional for semantic ranking exercises in Retrieval Lab UI
+# SEARCH_SEMANTIC_CONFIG=default
 ```
 
 ## ---------- Azure OpenAI ----------
