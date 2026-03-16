@@ -41,6 +41,7 @@ Detailed guide with concepts and examples:
 
 - `docs/AI102_Retrieval_Lab_README.md`
 - `docs/AI102_Evaluation_Lab_README.md`
+- `docs/FLUX2_PRO_README.md`
 
 ![UI](./photos/image.png)
 

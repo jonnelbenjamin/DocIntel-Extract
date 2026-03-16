@@ -1,6 +1,7 @@
 import time
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import streamlit as st
@@ -14,6 +15,7 @@ from utils import must_get, chunk_text
 from docintel import extract_pdf_text_by_page
 from rag import get_clients, embed_text, chat_answer_with_citations
 from eval_harness import load_eval_questions, run_eval_case, summarize_results
+from flux import generate_flux_image, extract_flux_image_bytes
 
 ENV_PATH = Path(__file__).resolve().parent / ".env"
 load_dotenv(dotenv_path=ENV_PATH)
@@ -491,6 +493,123 @@ def main():
             file_name="eval_results.json",
             mime="application/json",
         )
+
+    render_flux_section()
+
+
+def render_flux_section() -> None:
+    st.divider()
+    st.subheader("4) FLUX.2-Pro — Image Generation (Azure AI Foundry)")
+    st.caption(
+        "Generate photorealistic or stylized images from text prompts using your Azure Foundry FLUX.2-Pro deployment."
+    )
+
+    flux_endpoint = st.text_input(
+        "FLUX endpoint",
+        value=st.session_state.get("flux_endpoint", os.getenv("FLUX_ENDPOINT", "")),
+        help=(
+            "Either Azure OpenAI base endpoint (https://<resource>.openai.azure.com) "
+            "or full Azure Foundry provider endpoint containing '/providers/.../flux-2-pro'."
+        ),
+    )
+    flux_key = st.text_input(
+        "FLUX API key",
+        value=st.session_state.get("flux_key", os.getenv("FLUX_KEY", "")),
+        type="password",
+    )
+    flux_deployment = st.text_input(
+        "FLUX deployment name",
+        value=st.session_state.get("flux_deployment", os.getenv("FLUX_DEPLOYMENT", "flux-2-pro")),
+        help="Required for Azure OpenAI endpoint style; ignored when endpoint already includes '/providers/.../flux-2-pro'.",
+    )
+    flux_api_version = st.text_input(
+        "FLUX API version",
+        value=st.session_state.get("flux_api_version", os.getenv("FLUX_API_VERSION", "2024-05-01-preview")),
+        help="Use the API version shown for your endpoint in Azure Foundry.",
+    )
+
+    prompt = st.text_area(
+        "Image prompt",
+        value="Cinematic drone shot of a mountain valley at sunrise, ultra detailed, realistic lighting, 8k composition.",
+        height=120,
+    )
+
+    col1, col2 = st.columns(2)
+    with col1:
+        image_size = st.selectbox("Size", ["1024x1024", "1024x1792", "1792x1024"], index=0)
+    with col2:
+        output_format = st.selectbox("Output format", ["png", "jpeg"], index=0)
+
+    response_format = st.selectbox("Response format", ["b64_json", "url"], index=0)
+
+    if "flux_result" not in st.session_state:
+        st.session_state["flux_result"] = None
+    if "flux_image_bytes" not in st.session_state:
+        st.session_state["flux_image_bytes"] = None
+    if "flux_mime_type" not in st.session_state:
+        st.session_state["flux_mime_type"] = "image/png"
+
+    if st.button("Generate FLUX image", type="primary"):
+        is_provider_endpoint = "/providers/" in flux_endpoint
+
+        if not flux_endpoint or not flux_key:
+            st.error("Endpoint and key are required.")
+            return
+        if not is_provider_endpoint and not flux_deployment:
+            st.error("Deployment name is required when using Azure OpenAI endpoint format.")
+            return
+        if not prompt.strip():
+            st.warning("Enter an image prompt first.")
+            return
+
+        st.session_state["flux_endpoint"] = flux_endpoint
+        st.session_state["flux_key"] = flux_key
+        st.session_state["flux_deployment"] = flux_deployment
+        st.session_state["flux_api_version"] = flux_api_version
+
+        try:
+            with st.spinner("Calling Azure Foundry FLUX.2-Pro endpoint..."):
+                result = generate_flux_image(
+                    endpoint=flux_endpoint,
+                    api_key=flux_key,
+                    deployment=flux_deployment,
+                    prompt=prompt,
+                    size=image_size,
+                    output_format=output_format,
+                    response_format=response_format,
+                    api_version=flux_api_version,
+                )
+
+            image_bytes = extract_flux_image_bytes(result)
+            st.session_state["flux_result"] = result
+            st.session_state["flux_image_bytes"] = image_bytes
+            st.session_state["flux_mime_type"] = (
+                "image/png" if output_format == "png" else "image/jpeg"
+            )
+
+            if image_bytes:
+                st.success("FLUX image generated successfully.")
+            else:
+                st.warning("Response received but no image bytes were found.")
+        except Exception as e:
+            st.error(f"FLUX generation failed: {e}")
+
+    image_bytes = st.session_state.get("flux_image_bytes")
+    if image_bytes:
+        st.markdown("### Generated FLUX Image")
+        st.image(image_bytes, use_column_width=True)
+
+        extension = "png" if st.session_state.get("flux_mime_type") == "image/png" else "jpg"
+        st.download_button(
+            "Download FLUX image",
+            data=image_bytes,
+            file_name=f"flux_generated.{extension}",
+            mime=st.session_state.get("flux_mime_type", "image/png"),
+        )
+
+    if st.session_state.get("flux_result"):
+        with st.expander("Raw FLUX response (debug)"):
+            st.json(st.session_state["flux_result"])
 
 
 if __name__ == "__main__":
