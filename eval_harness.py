@@ -11,6 +11,8 @@ class EvalQuestion:
     question: str
     expected_keywords: list[str]
     retrieval_keywords: list[str]
+    expected_values: list[str]
+    expected_field: str
     notes: str = ""
 
 
@@ -28,6 +30,8 @@ def load_eval_questions(path: Path) -> list[EvalQuestion]:
                 question=item["question"],
                 expected_keywords=item.get("expected_keywords", []),
                 retrieval_keywords=item.get("retrieval_keywords", []),
+                expected_values=item.get("expected_values", []),
+                expected_field=item.get("expected_field", ""),
                 notes=item.get("notes", ""),
             )
         )
@@ -37,6 +41,13 @@ def load_eval_questions(path: Path) -> list[EvalQuestion]:
 
 def has_citation(answer: str) -> bool:
     return bool(re.search(r"\[\d+\]", answer or ""))
+
+
+def normalize_for_exact_match(text: str) -> str:
+    normalized = (text or "").lower()
+    normalized = re.sub(r"[$,]", "", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized
 
 
 def keyword_hit_ratio(text: str, keywords: list[str]) -> float:
@@ -84,7 +95,21 @@ def run_eval_case(
 
     total_ms = int((time.time() - t0) * 1000)
 
-    answer_ok, answer_ratio = grade_answer(answer, question.expected_keywords)
+    answer_exact_match = False
+    answer_ratio = 0.0
+
+    if question.expected_values:
+        answer_norm = normalize_for_exact_match(answer)
+        value_hits = 0
+        for expected in question.expected_values:
+            if normalize_for_exact_match(expected) in answer_norm:
+                value_hits += 1
+        answer_exact_match = value_hits == len(question.expected_values)
+        answer_ok = answer_exact_match
+        answer_ratio = value_hits / len(question.expected_values)
+    else:
+        answer_ok, answer_ratio = grade_answer(answer, question.expected_keywords)
+
     retrieval_ok, retrieval_ratio = grade_retrieval(retrieved, question.retrieval_keywords)
 
     return {
@@ -93,6 +118,7 @@ def run_eval_case(
         "question": question.question,
         "answer": answer,
         "answer_has_citation": has_citation(answer),
+        "answer_exact_match": answer_exact_match,
         "answer_keyword_ratio": round(answer_ratio, 3),
         "answer_correct": answer_ok,
         "retrieval_keyword_ratio": round(retrieval_ratio, 3),
@@ -101,6 +127,7 @@ def run_eval_case(
         "latency_retrieval_ms": retrieval_ms,
         "latency_answer_ms": answer_ms,
         "latency_total_ms": total_ms,
+        "expected_field": question.expected_field,
         "notes": question.notes,
     }
 
@@ -119,6 +146,12 @@ def summarize_results(rows: list[dict]) -> list[dict]:
         answer_correct = sum(1 for r in mode_rows if r["answer_correct"])
         retrieval_hit = sum(1 for r in mode_rows if r["retrieval_hit"])
         citations = sum(1 for r in mode_rows if r["answer_has_citation"])
+        exact_match_rows = [r for r in mode_rows if r.get("expected_field")]
+        exact_match_rate = (
+            round(sum(1 for r in exact_match_rows if r.get("answer_exact_match")) / len(exact_match_rows), 3)
+            if exact_match_rows
+            else None
+        )
         avg_latency = int(sum(r["latency_total_ms"] for r in mode_rows) / n)
 
         summary.append(
@@ -126,6 +159,7 @@ def summarize_results(rows: list[dict]) -> list[dict]:
                 "mode": mode,
                 "cases": n,
                 "answer_correct_rate": round(answer_correct / n, 3),
+                "answer_exact_match_rate": exact_match_rate,
                 "retrieval_hit_rate": round(retrieval_hit / n, 3),
                 "citation_rate": round(citations / n, 3),
                 "avg_total_latency_ms": avg_latency,

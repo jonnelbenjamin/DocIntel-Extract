@@ -2,6 +2,8 @@ import time
 import hashlib
 import json
 import os
+import csv
+from io import StringIO
 from pathlib import Path
 
 import streamlit as st
@@ -12,7 +14,7 @@ from azure.search.documents.models import VectorizedQuery
 from azure.storage.filedatalake import DataLakeServiceClient
 
 from utils import must_get, chunk_text
-from docintel import extract_pdf_text_by_page
+from docintel import extract_pdf_text_by_page, extract_invoice_data
 from rag import get_clients, embed_text, chat_answer_with_citations
 from eval_harness import load_eval_questions, run_eval_case, summarize_results
 from flux import generate_flux_image, extract_flux_image_bytes
@@ -24,10 +26,203 @@ EVAL_DATASET_PATHS = {
     "Invoice": Path(__file__).resolve().parent / "data" / "eval_questions_invoice.json",
 }
 
+INVOICE_INDEX_FIELDS = [
+    "invoice_number",
+    "vendor_name",
+    "customer_name",
+    "invoice_date",
+    "due_date",
+    "payment_terms",
+    "currency_code",
+    "subtotal",
+    "tax_total",
+    "invoice_total",
+]
+
 
 def stable_id(source: str, page: int, chunk_idx: int, text: str) -> str:
     h = hashlib.sha256(f"{source}|{page}|{chunk_idx}|{text}".encode("utf-8")).hexdigest()
     return h[:32]
+
+
+def is_invoice_question(question: str) -> bool:
+    q = (question or "").lower()
+    invoice_terms = [
+        "invoice",
+        "vendor",
+        "bill to",
+        "customer",
+        "due date",
+        "payment terms",
+        "subtotal",
+        "tax",
+        "total",
+        "line item",
+    ]
+    return any(term in q for term in invoice_terms)
+
+
+def answer_invoice_question(question: str, invoice_data: dict) -> str | None:
+    if not invoice_data:
+        return None
+
+    q = (question or "").lower()
+    facts = {
+        "invoice_number": invoice_data.get("invoice_number"),
+        "vendor_name": invoice_data.get("vendor_name"),
+        "customer_name": invoice_data.get("customer_name"),
+        "invoice_date": invoice_data.get("invoice_date"),
+        "due_date": invoice_data.get("due_date"),
+        "payment_terms": invoice_data.get("payment_terms"),
+        "currency_code": invoice_data.get("currency_code"),
+        "subtotal": invoice_data.get("subtotal"),
+        "tax_total": invoice_data.get("tax_total"),
+        "invoice_total": invoice_data.get("invoice_total"),
+    }
+
+    if "line item" in q or "item" in q:
+        line_items = invoice_data.get("line_items", [])
+        if not line_items:
+            return None
+        rows = []
+        for idx, item in enumerate(line_items, start=1):
+            rows.append(
+                f"{idx}. {item.get('description', 'n/a')} | qty={item.get('quantity', 'n/a')} | amount={item.get('amount', 'n/a')}"
+            )
+        return "Line items from structured invoice fields [1]:\n" + "\n".join(rows)
+
+    matched_lines = []
+    if "invoice number" in q or "invoice #" in q:
+        matched_lines.append(f"Invoice number: {facts['invoice_number']}")
+    if "vendor" in q or "supplier" in q:
+        matched_lines.append(f"Vendor: {facts['vendor_name']}")
+    if "bill to" in q or "customer" in q or "being billed" in q:
+        matched_lines.append(f"Customer: {facts['customer_name']}")
+    if "invoice date" in q or ("date" in q and "due" not in q):
+        matched_lines.append(f"Invoice date: {facts['invoice_date']}")
+    if "due date" in q or ("due" in q and "date" in q):
+        matched_lines.append(f"Due date: {facts['due_date']}")
+    if "payment terms" in q or "payment expected" in q:
+        matched_lines.append(f"Payment terms: {facts['payment_terms']}")
+    if "subtotal" in q:
+        matched_lines.append(f"Subtotal: {facts['subtotal']}")
+    if "tax" in q:
+        matched_lines.append(f"Tax total: {facts['tax_total']}")
+    if "total" in q:
+        matched_lines.append(f"Invoice total: {facts['invoice_total']}")
+
+    if not matched_lines:
+        return None
+
+    return "Structured invoice answer [1]:\n" + "\n".join(matched_lines)
+
+
+def invoice_index_fields(invoice_data: dict | None) -> dict:
+    if not invoice_data:
+        return {}
+
+    return {
+        "invoice_number": invoice_data.get("invoice_number"),
+        "vendor_name": invoice_data.get("vendor_name"),
+        "customer_name": invoice_data.get("customer_name"),
+        "invoice_date": invoice_data.get("invoice_date"),
+        "due_date": invoice_data.get("due_date"),
+        "payment_terms": invoice_data.get("payment_terms"),
+        "currency_code": invoice_data.get("currency_code"),
+        "subtotal": invoice_data.get("subtotal"),
+        "tax_total": invoice_data.get("tax_total"),
+        "invoice_total": invoice_data.get("invoice_total"),
+    }
+
+
+def confidence_badge(confidence: float | None) -> str:
+    if confidence is None:
+        return "Unknown"
+    if confidence >= 0.9:
+        return "High"
+    if confidence >= 0.75:
+        return "Medium"
+    return "Low"
+
+
+def build_invoice_confidence_rows(invoice_data: dict) -> list[dict]:
+    conf = invoice_data.get("field_confidence", {}) or {}
+    return [
+        {
+            "field": "invoice_number",
+            "value": invoice_data.get("invoice_number"),
+            "confidence": conf.get("invoice_number"),
+            "quality": confidence_badge(conf.get("invoice_number")),
+        },
+        {
+            "field": "vendor_name",
+            "value": invoice_data.get("vendor_name"),
+            "confidence": conf.get("vendor_name"),
+            "quality": confidence_badge(conf.get("vendor_name")),
+        },
+        {
+            "field": "customer_name",
+            "value": invoice_data.get("customer_name"),
+            "confidence": conf.get("customer_name"),
+            "quality": confidence_badge(conf.get("customer_name")),
+        },
+        {
+            "field": "invoice_date",
+            "value": invoice_data.get("invoice_date"),
+            "confidence": conf.get("invoice_date"),
+            "quality": confidence_badge(conf.get("invoice_date")),
+        },
+        {
+            "field": "due_date",
+            "value": invoice_data.get("due_date"),
+            "confidence": conf.get("due_date"),
+            "quality": confidence_badge(conf.get("due_date")),
+        },
+        {
+            "field": "payment_terms",
+            "value": invoice_data.get("payment_terms"),
+            "confidence": conf.get("payment_terms"),
+            "quality": confidence_badge(conf.get("payment_terms")),
+        },
+        {
+            "field": "subtotal",
+            "value": invoice_data.get("subtotal"),
+            "confidence": conf.get("subtotal"),
+            "quality": confidence_badge(conf.get("subtotal")),
+        },
+        {
+            "field": "tax_total",
+            "value": invoice_data.get("tax_total"),
+            "confidence": conf.get("tax_total"),
+            "quality": confidence_badge(conf.get("tax_total")),
+        },
+        {
+            "field": "invoice_total",
+            "value": invoice_data.get("invoice_total"),
+            "confidence": conf.get("invoice_total"),
+            "quality": confidence_badge(conf.get("invoice_total")),
+        },
+    ]
+
+
+def line_items_to_csv(line_items: list[dict]) -> str:
+    buffer = StringIO()
+    writer = csv.DictWriter(
+        buffer,
+        fieldnames=["description", "quantity", "unit_price", "amount", "product_code"],
+    )
+    writer.writeheader()
+    for item in line_items:
+        writer.writerow(
+            {
+                "description": item.get("description"),
+                "quantity": item.get("quantity"),
+                "unit_price": item.get("unit_price"),
+                "amount": item.get("amount"),
+                "product_code": item.get("product_code"),
+            }
+        )
+    return buffer.getvalue()
 
 
 def get_search_client() -> SearchClient:
@@ -78,6 +273,7 @@ def index_pdf_bytes(
     aoai,
     embed_dep: str,
     search: SearchClient,
+    invoice_data: dict | None = None,
 ) -> bool:
     with st.spinner("Extracting text with Document Intelligence..."):
         t0 = time.time()
@@ -91,6 +287,27 @@ def index_pdf_bytes(
     uploaded_chunks = 0
     batch = []
     BATCH_SIZE = 5
+    invoice_meta = invoice_index_fields(invoice_data)
+    use_invoice_meta = bool(invoice_meta)
+
+    def upload_batch(batch_docs: list[dict]) -> tuple[bool, int]:
+        nonlocal use_invoice_meta
+        try:
+            search.upload_documents(batch_docs)
+            return True, len(batch_docs)
+        except Exception as e:
+            if use_invoice_meta:
+                st.warning(
+                    f"Search upload failed with invoice metadata fields ({e}). Retrying without invoice metadata fields."
+                )
+                use_invoice_meta = False
+                stripped_docs = [
+                    {k: v for k, v in d.items() if k not in INVOICE_INDEX_FIELDS}
+                    for d in batch_docs
+                ]
+                search.upload_documents(stripped_docs)
+                return True, len(stripped_docs)
+            raise
 
     with st.spinner("Chunking + embedding + uploading to Azure AI Search..."):
         for p in pages:
@@ -98,24 +315,25 @@ def index_pdf_bytes(
 
             for i, ch in enumerate(chunks):
                 vec = embed_text(aoai, embed_dep, ch)
-                batch.append(
-                    {
-                        "id": stable_id(source_name, p.page, i, ch),
-                        "content": ch,
-                        "source": source_name,
-                        "page": p.page,
-                        "contentVector": vec,
-                    }
-                )
+                doc = {
+                    "id": stable_id(source_name, p.page, i, ch),
+                    "content": ch,
+                    "source": source_name,
+                    "page": p.page,
+                    "contentVector": vec,
+                }
+                if use_invoice_meta:
+                    doc.update(invoice_meta)
+                batch.append(doc)
 
                 if len(batch) >= BATCH_SIZE:
-                    search.upload_documents(batch)
-                    uploaded_chunks += len(batch)
+                    _, uploaded = upload_batch(batch)
+                    uploaded_chunks += uploaded
                     batch = []
 
         if batch:
-            search.upload_documents(batch)
-            uploaded_chunks += len(batch)
+            _, uploaded = upload_batch(batch)
+            uploaded_chunks += uploaded
 
     st.success(f"✅ Indexed {uploaded_chunks} chunks into Azure AI Search")
 
@@ -195,11 +413,18 @@ def main():
 
     if "active_source" not in st.session_state:
         st.session_state["active_source"] = ""
+    if "invoice_fields_by_source" not in st.session_state:
+        st.session_state["invoice_fields_by_source"] = {}
 
     col_left, col_right = st.columns([1, 1])
 
     with col_left:
         st.subheader("1) Upload or Select + Index")
+        st.info(
+            "How this works: pick a PDF source, choose a Doc Intelligence model, then click 'Extract + Index'. "
+            "If you enable structured invoice extraction, the app runs prebuilt-invoice and stores invoice fields "
+            "(number, totals, dates, terms, line items) for the selected source."
+        )
 
         input_mode = st.radio(
             "Choose PDF source",
@@ -227,8 +452,21 @@ def main():
                 st.warning("No PDF blobs found in the configured container.")
                 default_source_name = "blob.pdf"
 
-        model_choice = st.selectbox("Doc Intelligence model", ["prebuilt-layout", "prebuilt-read"])
+        model_choice = st.selectbox(
+            "Doc Intelligence model",
+            ["prebuilt-layout", "prebuilt-read", "prebuilt-invoice"],
+        )
+        extract_invoice_structured = st.checkbox(
+            "Extract structured invoice fields",
+            value=model_choice == "prebuilt-invoice",
+            help="Uses prebuilt-invoice to capture invoice entities with confidence.",
+        )
         source_name = st.text_input("Source name (for citations)", value=default_source_name)
+
+        st.caption(
+            "Tip: For invoice PDFs, use 'prebuilt-invoice' and keep 'Extract structured invoice fields' enabled "
+            "to unlock the Invoice Intelligence panel in section 2."
+        )
 
         st.caption("Chunking controls (bigger chunks = fewer embedding calls)")
         max_chars = st.slider("max_chars", min_value=1500, max_value=12000, value=6000, step=500)
@@ -252,6 +490,19 @@ def main():
                     st.write(f"Blob PDF size: {len(pdf_bytes):,} bytes")
 
             if pdf_bytes:
+                invoice_data = None
+                if extract_invoice_structured:
+                    with st.spinner("Extracting structured invoice fields..."):
+                        try:
+                            invoice_data = extract_invoice_data(pdf_bytes, DOC_EP, DOC_KEY)
+                        except Exception as e:
+                            st.warning(f"Structured invoice extraction failed: {e}")
+
+                if invoice_data:
+                    st.session_state["invoice_fields_by_source"][source_name] = invoice_data
+                    with st.expander("Structured invoice fields (debug)"):
+                        st.json(invoice_data)
+
                 ok = index_pdf_bytes(
                     pdf_bytes=pdf_bytes,
                     source_name=source_name,
@@ -263,12 +514,17 @@ def main():
                     aoai=aoai,
                     embed_dep=EMBED_DEP,
                     search=search,
+                    invoice_data=invoice_data,
                 )
                 if ok:
                     st.session_state["active_source"] = source_name
 
     with col_right:
         st.subheader("2) Ask questions (RAG)")
+        st.info(
+            "How answers are produced: the app can answer from structured invoice fields first (when enabled), "
+            "and falls back to retrieval + generation for broader questions."
+        )
 
         with st.expander("AI-102 Retrieval Lab", expanded=False):
             st.caption(
@@ -308,43 +564,90 @@ def main():
         if active_source:
             st.caption(f"Active source: {active_source}")
 
-        if st.button("Answer with citations"):
-            with st.spinner("Embedding question..."):
-                qvec = embed_text(aoai, EMBED_DEP, question)
+        active_invoice = st.session_state.get("invoice_fields_by_source", {}).get(active_source)
+        if active_invoice:
+            st.markdown("### Invoice Intelligence")
+            st.caption("Structured invoice fields extracted by Document Intelligence with confidence quality.")
 
-            with st.spinner("Retrieving from Azure AI Search..."):
-                try:
-                    retrieved = retrieve_chunks(
-                        search=search,
-                        question=question,
-                        qvec=qvec,
-                        top_k=top_k,
-                        retrieval_mode=retrieval_mode,
-                        use_semantic=use_semantic,
-                        semantic_config_name=semantic_config_name,
-                        use_source_filter=use_source_filter,
-                        active_source=active_source,
-                    )
-                except Exception as e:
-                    st.error(f"Search query failed: {e}")
-                    if use_semantic:
-                        st.info(
-                            "Tip: Verify your semantic configuration name exists in the index and try again."
+            confidence_rows = build_invoice_confidence_rows(active_invoice)
+            st.dataframe(confidence_rows, use_container_width=True)
+
+            line_items = active_invoice.get("line_items", [])
+            if line_items:
+                st.markdown("Line Items")
+                st.dataframe(line_items, use_container_width=True)
+                st.download_button(
+                    "Download line items (CSV)",
+                    data=line_items_to_csv(line_items),
+                    file_name=f"{active_source}_line_items.csv",
+                    mime="text/csv",
+                )
+            else:
+                st.info("No structured line items detected in this invoice.")
+
+            with st.expander("Active document structured invoice fields (raw)", expanded=False):
+                st.json(active_invoice)
+        else:
+            st.caption(
+                "Invoice Intelligence appears here after you index a PDF with structured invoice extraction enabled."
+            )
+
+        use_invoice_router = st.checkbox(
+            "Use structured invoice QA routing",
+            value=True,
+            help="Answer invoice field questions directly from Document Intelligence extracted fields before falling back to RAG.",
+        )
+        st.caption(
+            "When enabled, invoice-style questions (invoice number, totals, due date, line items) are answered "
+            "from extracted fields when available."
+        )
+
+        if st.button("Answer with citations"):
+            if use_invoice_router and active_invoice and is_invoice_question(question):
+                direct_answer = answer_invoice_question(question, active_invoice)
+            else:
+                direct_answer = None
+
+            if direct_answer:
+                st.markdown("### Answer")
+                st.write(direct_answer)
+            else:
+                with st.spinner("Embedding question..."):
+                    qvec = embed_text(aoai, EMBED_DEP, question)
+
+                with st.spinner("Retrieving from Azure AI Search..."):
+                    try:
+                        retrieved = retrieve_chunks(
+                            search=search,
+                            question=question,
+                            qvec=qvec,
+                            top_k=top_k,
+                            retrieval_mode=retrieval_mode,
+                            use_semantic=use_semantic,
+                            semantic_config_name=semantic_config_name,
+                            use_source_filter=use_source_filter,
+                            active_source=active_source,
                         )
+                    except Exception as e:
+                        st.error(f"Search query failed: {e}")
+                        if use_semantic:
+                            st.info(
+                                "Tip: Verify your semantic configuration name exists in the index and try again."
+                            )
+                        return
+
+                if not retrieved:
+                    st.warning("No results retrieved. Index a document first.")
                     return
 
-            if not retrieved:
-                st.warning("No results retrieved. Index a document first.")
-                return
+                with st.spinner("Generating answer with Azure OpenAI..."):
+                    answer = chat_answer_with_citations(aoai, CHAT_DEP, question, retrieved)
 
-            with st.spinner("Generating answer with Azure OpenAI..."):
-                answer = chat_answer_with_citations(aoai, CHAT_DEP, question, retrieved)
+                st.markdown("### Answer")
+                st.write(answer)
 
-            st.markdown("### Answer")
-            st.write(answer)
-
-            with st.expander("Retrieved chunks (debug)"):
-                st.json(retrieved)
+                with st.expander("Retrieved chunks (debug)"):
+                    st.json(retrieved)
 
     st.divider()
     st.subheader("3) Evaluate Retrieval + Answers (AI-102)")
@@ -424,8 +727,18 @@ def main():
 
             return _retrieve
 
+        active_invoice_for_eval = st.session_state.get("invoice_fields_by_source", {}).get(
+            st.session_state.get("active_source", "")
+        )
+
         embed_fn = lambda q: embed_text(aoai, EMBED_DEP, q)
-        answer_fn = lambda q, retrieved: chat_answer_with_citations(aoai, CHAT_DEP, q, retrieved)
+
+        def answer_fn(q: str, retrieved: list[dict]) -> str:
+            if eval_profile == "Invoice" and active_invoice_for_eval and is_invoice_question(q):
+                direct = answer_invoice_question(q, active_invoice_for_eval)
+                if direct:
+                    return direct
+            return chat_answer_with_citations(aoai, CHAT_DEP, q, retrieved)
 
         for q in questions_to_run:
             for mode_name in selected_modes:
@@ -446,6 +759,7 @@ def main():
                             "question": q.question,
                             "answer": f"ERROR: {e}",
                             "answer_has_citation": False,
+                            "answer_exact_match": False,
                             "answer_keyword_ratio": 0.0,
                             "answer_correct": False,
                             "retrieval_keyword_ratio": 0.0,

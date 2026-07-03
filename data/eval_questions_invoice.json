@@ -1,15 +1,19 @@
 [
   {
     "id": "invoice_core_fields",
-    "question": "What is the invoice number, total amount, and due date?",
-    "expected_keywords": ["invoice", "total", "due"],
-    "retrieval_keywords": ["invoice", "total", "due"],
-    "notes": "Baseline extraction of key invoice facts."
+    "question": "What is the invoice number and final total amount?",
+    "expected_keywords": ["invoice", "total"],
+    "expected_values": ["INV-2026-0304", "12480.5"],
+    "expected_field": "invoice_number+invoice_total",
+    "retrieval_keywords": ["invoice", "total"],
+    "notes": "Exact match on invoice id and total amount from structured fields."
   },
   {
     "id": "payment_terms",
     "question": "What are the payment terms and when is payment expected?",
     "expected_keywords": ["payment", "terms", "due"],
+    "expected_values": ["Net 14", "2026-03-18"],
+    "expected_field": "payment_terms+due_date",
     "retrieval_keywords": ["payment", "terms", "due"],
     "notes": "Tests whether terms and due timeline are both captured."
   },
@@ -17,6 +21,8 @@
     "id": "line_items",
     "question": "List the purchased items and their amounts.",
     "expected_keywords": ["item", "amount"],
+    "expected_values": ["Data pipeline support", "8800.0", "GenAI extraction POC", "3300.0"],
+    "expected_field": "line_items",
     "retrieval_keywords": ["item", "amount"],
     "notes": "Checks table-like detail retrieval from invoice body."
   },
@@ -24,6 +30,8 @@
     "id": "supplier_customer",
     "question": "Who is the supplier and who is being billed?",
     "expected_keywords": ["supplier", "bill", "customer"],
+    "expected_values": ["Acme Analytics LLC", "Contoso Federal Programs"],
+    "expected_field": "vendor_name+customer_name",
     "retrieval_keywords": ["supplier", "bill", "customer"],
     "notes": "Entity extraction style question."
   },
@@ -31,6 +39,8 @@
     "id": "tax_subtotal",
     "question": "What are subtotal, tax, and final total values?",
     "expected_keywords": ["subtotal", "tax", "total"],
+    "expected_values": ["12480.5"],
+    "expected_field": "invoice_total",
     "retrieval_keywords": ["subtotal", "tax", "total"],
     "notes": "Multi-field numeric extraction check."
   }
