@@ -56,6 +56,11 @@ def apply_custom_css() -> None:
             --accent: #0077b6;
             --accent-2: #00a896;
             --chip: #e6f4ff;
+            --section-upload: #0077b6;
+            --section-rag: #00a896;
+            --section-eval: #ff9f1c;
+            --section-flux: #ef476f;
+            --section-ops: #5e6472;
         }
 
         .stApp {
@@ -95,9 +100,11 @@ def apply_custom_css() -> None:
         }
 
         .block-container {
-            max-width: 1240px;
+            max-width: 1720px;
             padding-top: 1.2rem;
             padding-bottom: 2rem;
+            padding-left: 1.1rem;
+            padding-right: 1.1rem;
         }
 
         h1, h2, h3 {
@@ -220,6 +227,94 @@ def apply_custom_css() -> None:
             border-radius: 12px;
             border: 1px solid rgba(16, 42, 67, 0.14);
             overflow: hidden;
+            box-shadow: 0 8px 20px rgba(16, 42, 67, 0.06);
+        }
+
+        [data-testid="stDataFrame"] [role="columnheader"] {
+            background: linear-gradient(180deg, rgba(0, 119, 182, 0.16), rgba(0, 119, 182, 0.08)) !important;
+            color: #0b2e4f !important;
+            font-weight: 600 !important;
+        }
+
+        [data-testid="stDataFrame"] [role="row"]:hover {
+            background: rgba(0, 119, 182, 0.05) !important;
+        }
+
+        .section-heading {
+            border-left: 6px solid var(--section-upload);
+            padding: 0.32rem 0.75rem;
+            margin: 0.2rem 0 0.65rem 0;
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.7);
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: var(--ink);
+            line-height: 1.3;
+        }
+
+        .section-upload { border-left-color: var(--section-upload); }
+        .section-rag { border-left-color: var(--section-rag); }
+        .section-eval { border-left-color: var(--section-eval); }
+        .section-flux { border-left-color: var(--section-flux); }
+        .section-ops { border-left-color: var(--section-ops); }
+
+        .chip {
+            display: inline-block;
+            border-radius: 999px;
+            padding: 0.16rem 0.56rem;
+            font-size: 0.8rem;
+            font-weight: 700;
+            border: 1px solid transparent;
+        }
+
+        .chip-high {
+            background: #eafbf1;
+            color: #1f7a4d;
+            border-color: #b7efce;
+        }
+
+        .chip-medium {
+            background: #fff8e9;
+            color: #8c5a00;
+            border-color: #f4d89b;
+        }
+
+        .chip-low {
+            background: #ffefef;
+            color: #9f2436;
+            border-color: #f0b9c2;
+        }
+
+        .chip-unknown {
+            background: #eef2f7;
+            color: #4e5d6c;
+            border-color: #d5dee8;
+        }
+
+        .confidence-grid {
+            display: grid;
+            grid-template-columns: 1.2fr 1.2fr 0.9fr 0.7fr;
+            gap: 0.45rem;
+            border: 1px solid rgba(16, 42, 67, 0.14);
+            border-radius: 12px;
+            padding: 0.55rem;
+            background: rgba(255, 255, 255, 0.75);
+        }
+
+        .confidence-head {
+            font-weight: 700;
+            color: #0b2e4f;
+            border-bottom: 1px dashed rgba(16, 42, 67, 0.15);
+            padding-bottom: 0.2rem;
+        }
+
+        .confidence-cell {
+            color: #31506d;
+            padding: 0.12rem 0;
+            min-height: 1.65rem;
+            display: flex;
+            align-items: center;
+        }
         }
 
         .st-emotion-cache-16txtl3 {
@@ -227,6 +322,20 @@ def apply_custom_css() -> None:
         }
 
         @media (max-width: 768px) {
+            .section-heading {
+                font-size: 1.05rem;
+                padding: 0.24rem 0.62rem;
+            }
+
+            .confidence-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .confidence-head {
+                border-bottom: none;
+                padding-bottom: 0;
+            }
+
             .block-container {
                 padding-top: 0.8rem;
                 padding-left: 0.9rem;
@@ -349,6 +458,24 @@ def confidence_badge(confidence: float | None) -> str:
     return "Low"
 
 
+def confidence_chip_html(label: str) -> str:
+    safe = (label or "Unknown").strip().lower()
+    css_class = {
+        "high": "chip chip-high",
+        "medium": "chip chip-medium",
+        "low": "chip chip-low",
+        "unknown": "chip chip-unknown",
+    }.get(safe, "chip chip-unknown")
+    return f"<span class='{css_class}'>{label or 'Unknown'}</span>"
+
+
+def render_section_heading(title: str, section_css: str) -> None:
+    st.markdown(
+        f"<div class='section-heading {section_css}'>{title}</div>",
+        unsafe_allow_html=True,
+    )
+
+
 def build_invoice_confidence_rows(invoice_data: dict) -> list[dict]:
     conf = invoice_data.get("field_confidence", {}) or {}
     return [
@@ -407,6 +534,37 @@ def build_invoice_confidence_rows(invoice_data: dict) -> list[dict]:
             "quality": confidence_badge(conf.get("invoice_total")),
         },
     ]
+
+
+def render_confidence_grid(rows: list[dict]) -> None:
+    if not rows:
+        st.info("No confidence rows to display.")
+        return
+
+    html = [
+        "<div class='confidence-grid'>",
+        "<div class='confidence-head'>Field</div>",
+        "<div class='confidence-head'>Value</div>",
+        "<div class='confidence-head'>Confidence</div>",
+        "<div class='confidence-head'>Quality</div>",
+    ]
+
+    for row in rows:
+        field = str(row.get("field", ""))
+        value = row.get("value")
+        conf = row.get("confidence")
+        quality = row.get("quality", "Unknown")
+
+        value_text = "-" if value in (None, "") else str(value)
+        conf_text = "-" if conf is None else f"{float(conf):.2f}"
+
+        html.append(f"<div class='confidence-cell'><strong>{field}</strong></div>")
+        html.append(f"<div class='confidence-cell'>{value_text}</div>")
+        html.append(f"<div class='confidence-cell'>{conf_text}</div>")
+        html.append(f"<div class='confidence-cell'>{confidence_chip_html(quality)}</div>")
+
+    html.append("</div>")
+    st.markdown("".join(html), unsafe_allow_html=True)
 
 
 def line_items_to_csv(line_items: list[dict]) -> str:
@@ -542,7 +700,7 @@ def recommended_ops_status(issues: list[dict]) -> str:
 
 def render_document_ops_section(aoai, chat_deployment: str) -> None:
     st.divider()
-    st.subheader("5) Document Ops Agent — Validation + Review")
+    render_section_heading("5) Document Ops Agent — Validation + Review", "section-ops")
     st.caption(
         "Run deterministic validation on extracted invoice fields, triage exceptions, and track human review outcomes."
     )
@@ -898,7 +1056,7 @@ def main():
     col_left, col_right = st.columns([1, 1])
 
     with col_left:
-        st.subheader("1) Upload or Select + Index")
+        render_section_heading("1) Upload or Select + Index", "section-upload")
         st.info(
             "How this works: pick a PDF source, choose a Doc Intelligence model, then click 'Extract + Index'. "
             "If you enable structured invoice extraction, the app runs prebuilt-invoice and stores invoice fields "
@@ -999,7 +1157,7 @@ def main():
                     st.session_state["active_source"] = source_name
 
     with col_right:
-        st.subheader("2) Ask questions (RAG)")
+        render_section_heading("2) Ask questions (RAG)", "section-rag")
         st.info(
             "How answers are produced: the app can answer from structured invoice fields first (when enabled), "
             "and falls back to retrieval + generation for broader questions."
@@ -1049,7 +1207,7 @@ def main():
             st.caption("Structured invoice fields extracted by Document Intelligence with confidence quality.")
 
             confidence_rows = build_invoice_confidence_rows(active_invoice)
-            st.dataframe(confidence_rows, use_container_width=True)
+            render_confidence_grid(confidence_rows)
 
             line_items = active_invoice.get("line_items", [])
             if line_items:
@@ -1129,7 +1287,7 @@ def main():
                     st.json(retrieved)
 
     st.divider()
-    st.subheader("3) Evaluate Retrieval + Answers (AI-102)")
+    render_section_heading("3) Evaluate Retrieval + Answers (AI-102)", "section-eval")
     st.caption(
         "Run a fixed question set across retrieval modes to measure answer correctness, retrieval quality, citations, and latency."
     )
@@ -1293,7 +1451,7 @@ def main():
 
 def render_flux_section() -> None:
     st.divider()
-    st.subheader("4) FLUX.2-Pro — Image Generation (Azure AI Foundry)")
+    render_section_heading("4) FLUX.2-Pro — Image Generation (Azure AI Foundry)", "section-flux")
     st.caption(
         "Generate photorealistic or stylized images from text prompts using your Azure Foundry FLUX.2-Pro deployment."
     )
