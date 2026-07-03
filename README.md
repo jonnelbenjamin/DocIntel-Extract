@@ -43,6 +43,26 @@ Detailed guide with concepts and examples:
 - `docs/AI102_Evaluation_Lab_README.md`
 - `docs/FLUX2_PRO_README.md`
 
+# New Feature: Document Ops Agent (Section 5)
+
+The app now includes `5) Document Ops Agent — Validation + Review` to add operational quality control after Document Intelligence extraction.
+
+## Why this was added
+
+- Extraction and RAG alone can still allow bad fields to pass silently.
+- Real document workflows need deterministic validation and human review states.
+- Teams need an audit trail of review decisions, not only generated answers.
+
+## What it accomplishes
+
+- Runs invoice validation checks (missing required fields, low confidence, total mismatch, date consistency, missing line items).
+- Produces automatic triage statuses (`Ready`, `Review Suggested`, `Needs Review`).
+- Adds manual reviewer decisions (`Unreviewed`, `Needs Review`, `Approved`, `Rejected`) with notes and timestamps.
+- Supports Azure OpenAI triage summaries to speed up reviewer decision-making.
+- Exports review queue data as JSON for downstream tracking.
+
+This section shifts the app from pure demo behavior toward a more production-oriented document operations flow.
+
 ![UI](./photos/image.png)
 
 ![Answer](./photos/image-1.png)

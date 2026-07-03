@@ -4,6 +4,7 @@ import json
 import os
 import csv
 from io import StringIO
+from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
@@ -426,6 +427,280 @@ def line_items_to_csv(line_items: list[dict]) -> str:
             }
         )
     return buffer.getvalue()
+
+
+def _to_float(value) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_iso_date(value: str | None) -> datetime | None:
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        return None
+
+
+def validate_invoice_for_ops(invoice_data: dict, confidence_threshold: float = 0.75) -> list[dict]:
+    issues: list[dict] = []
+    required_fields = [
+        "invoice_number",
+        "vendor_name",
+        "customer_name",
+        "invoice_date",
+        "due_date",
+        "invoice_total",
+    ]
+
+    field_confidence = invoice_data.get("field_confidence", {}) or {}
+
+    for field in required_fields:
+        value = invoice_data.get(field)
+        if value in (None, ""):
+            issues.append(
+                {
+                    "severity": "error",
+                    "code": "missing_required_field",
+                    "field": field,
+                    "detail": f"Required field '{field}' is missing.",
+                }
+            )
+
+    for field, conf in field_confidence.items():
+        if conf is not None and conf < confidence_threshold:
+            issues.append(
+                {
+                    "severity": "warning",
+                    "code": "low_confidence",
+                    "field": field,
+                    "detail": f"Low confidence for '{field}' ({conf:.2f} < {confidence_threshold:.2f}).",
+                }
+            )
+
+    subtotal = _to_float(invoice_data.get("subtotal"))
+    tax_total = _to_float(invoice_data.get("tax_total"))
+    invoice_total = _to_float(invoice_data.get("invoice_total"))
+
+    if subtotal is not None and tax_total is not None and invoice_total is not None:
+        expected_total = subtotal + tax_total
+        if abs(expected_total - invoice_total) > 0.05:
+            issues.append(
+                {
+                    "severity": "error",
+                    "code": "total_mismatch",
+                    "field": "invoice_total",
+                    "detail": (
+                        f"Subtotal + Tax ({expected_total:.2f}) does not match Invoice Total ({invoice_total:.2f})."
+                    ),
+                }
+            )
+
+    invoice_date = _parse_iso_date(invoice_data.get("invoice_date"))
+    due_date = _parse_iso_date(invoice_data.get("due_date"))
+    if invoice_date and due_date and due_date < invoice_date:
+        issues.append(
+            {
+                "severity": "error",
+                "code": "invalid_due_date",
+                "field": "due_date",
+                "detail": "Due date is earlier than invoice date.",
+            }
+        )
+
+    line_items = invoice_data.get("line_items", []) or []
+    if not line_items:
+        issues.append(
+            {
+                "severity": "warning",
+                "code": "no_line_items",
+                "field": "line_items",
+                "detail": "No line items were extracted.",
+            }
+        )
+
+    return issues
+
+
+def recommended_ops_status(issues: list[dict]) -> str:
+    error_count = sum(1 for i in issues if i.get("severity") == "error")
+    warning_count = sum(1 for i in issues if i.get("severity") == "warning")
+
+    if error_count > 0:
+        return "Needs Review"
+    if warning_count >= 2:
+        return "Needs Review"
+    if warning_count == 1:
+        return "Review Suggested"
+    return "Ready"
+
+
+def render_document_ops_section(aoai, chat_deployment: str) -> None:
+    st.divider()
+    st.subheader("5) Document Ops Agent — Validation + Review")
+    st.caption(
+        "Run deterministic validation on extracted invoice fields, triage exceptions, and track human review outcomes."
+    )
+
+    with st.expander("Why this was added and what it accomplishes", expanded=False):
+        st.markdown(
+            """
+            - **Why this was added:** Extraction + Q&A are useful for demos, but operational document workflows need quality control and human review paths.
+            - **What it accomplishes:** Adds a practical post-extraction layer for rule checks, confidence-based triage, and reviewer decisions.
+            - **Business value:** Reduces silent extraction errors and gives teams an auditable process (`Unreviewed -> Approved/Rejected`).
+            - **AI value:** Uses Azure OpenAI for concise triage summaries so reviewers can prioritize quickly.
+            - **Production mindset:** Moves the app from POC-only behavior to a governance-friendly document operations workflow.
+            """
+        )
+
+    invoice_docs = st.session_state.get("invoice_fields_by_source", {})
+    if "ops_review_by_source" not in st.session_state:
+        st.session_state["ops_review_by_source"] = {}
+
+    if not invoice_docs:
+        st.info("No structured invoice documents available yet. Extract at least one invoice in section 1 first.")
+        return
+
+    confidence_threshold = st.slider(
+        "Validation confidence threshold",
+        min_value=0.50,
+        max_value=0.95,
+        value=0.75,
+        step=0.05,
+        help="Fields below this confidence are flagged for review.",
+    )
+
+    review_state = st.session_state["ops_review_by_source"]
+    queue_rows = []
+
+    for source, invoice_data in invoice_docs.items():
+        issues = validate_invoice_for_ops(invoice_data, confidence_threshold=confidence_threshold)
+        auto_status = recommended_ops_status(issues)
+        record = review_state.get(source, {})
+
+        queue_rows.append(
+            {
+                "source": source,
+                "auto_status": auto_status,
+                "manual_status": record.get("manual_status", "Unreviewed"),
+                "errors": sum(1 for i in issues if i.get("severity") == "error"),
+                "warnings": sum(1 for i in issues if i.get("severity") == "warning"),
+                "last_reviewed_at": record.get("last_reviewed_at", ""),
+            }
+        )
+
+    col_a, col_b, col_c = st.columns(3)
+    with col_a:
+        st.metric("Structured invoices", len(queue_rows))
+    with col_b:
+        ready_count = sum(1 for r in queue_rows if r["auto_status"] == "Ready")
+        st.metric("Auto-ready", ready_count)
+    with col_c:
+        review_count = sum(1 for r in queue_rows if r["auto_status"] == "Needs Review")
+        st.metric("Needs review", review_count)
+
+    st.markdown("### Review Queue")
+    st.dataframe(queue_rows, use_container_width=True)
+
+    selected_source = st.selectbox(
+        "Select document to review",
+        list(invoice_docs.keys()),
+        index=0,
+    )
+    selected_invoice = invoice_docs[selected_source]
+    selected_issues = validate_invoice_for_ops(
+        selected_invoice,
+        confidence_threshold=confidence_threshold,
+    )
+    selected_auto_status = recommended_ops_status(selected_issues)
+
+    st.markdown("### Selected Document Triage")
+    if selected_auto_status == "Ready":
+        st.success("Auto status: Ready")
+    elif selected_auto_status == "Review Suggested":
+        st.warning("Auto status: Review Suggested")
+    else:
+        st.error("Auto status: Needs Review")
+
+    if selected_issues:
+        st.dataframe(selected_issues, use_container_width=True)
+    else:
+        st.info("No validation issues found for this document.")
+
+    existing = review_state.get(selected_source, {})
+    manual_status = st.selectbox(
+        "Manual review decision",
+        ["Unreviewed", "Needs Review", "Approved", "Rejected"],
+        index=["Unreviewed", "Needs Review", "Approved", "Rejected"].index(
+            existing.get("manual_status", "Unreviewed")
+        ),
+    )
+    review_notes = st.text_area(
+        "Reviewer notes",
+        value=existing.get("notes", ""),
+        height=90,
+    )
+
+    if st.button("Save review decision"):
+        review_state[selected_source] = {
+            "manual_status": manual_status,
+            "notes": review_notes,
+            "last_reviewed_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%SZ"),
+            "auto_status": selected_auto_status,
+        }
+        st.success(f"Saved review decision for {selected_source}.")
+
+    if st.button("Generate AI triage summary"):
+        with st.spinner("Generating triage summary with Azure OpenAI..."):
+            issues_text = "\n".join(
+                f"- [{i.get('severity')}] {i.get('field')}: {i.get('detail')}"
+                for i in selected_issues
+            ) or "- No issues found"
+
+            prompt = (
+                "You are a document operations analyst. "
+                "Summarize validation risk and provide a short recommendation.\n\n"
+                f"Source: {selected_source}\n"
+                f"Auto status: {selected_auto_status}\n"
+                f"Invoice fields: {json.dumps(invoice_index_fields(selected_invoice), indent=2)}\n"
+                f"Validation issues:\n{issues_text}\n\n"
+                "Return 3 short bullet points and one final recommendation sentence."
+            )
+
+            resp = aoai.chat.completions.create(
+                model=chat_deployment,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "Be concise, factual, and prioritize operational risk.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0,
+            )
+            ai_summary = resp.choices[0].message.content
+            previous = review_state.get(selected_source, {})
+            review_state[selected_source] = {
+                **previous,
+                "ai_summary": ai_summary,
+            }
+
+    latest = review_state.get(selected_source, {})
+    if latest.get("ai_summary"):
+        st.markdown("### AI Triage Summary")
+        st.write(latest["ai_summary"])
+
+    st.download_button(
+        "Download review queue (JSON)",
+        data=json.dumps(queue_rows, indent=2),
+        file_name="document_ops_queue.json",
+        mime="application/json",
+    )
 
 
 def get_search_client() -> SearchClient:
@@ -1013,6 +1288,7 @@ def main():
         )
 
     render_flux_section()
+    render_document_ops_section(aoai=aoai, chat_deployment=CHAT_DEP)
 
 
 def render_flux_section() -> None:
