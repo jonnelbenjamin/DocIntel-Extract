@@ -40,6 +40,209 @@ INVOICE_INDEX_FIELDS = [
 ]
 
 
+def apply_custom_css() -> None:
+    st.markdown(
+        """
+        <style>
+        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+        :root {
+            --app-bg: radial-gradient(circle at 0% 0%, #dff4ff 0%, #f5fbff 32%, #f8fbf7 60%, #fffdf8 100%);
+            --card-bg: rgba(255, 255, 255, 0.76);
+            --card-border: rgba(13, 75, 115, 0.14);
+            --ink: #102a43;
+            --ink-soft: #486581;
+            --accent: #0077b6;
+            --accent-2: #00a896;
+            --chip: #e6f4ff;
+        }
+
+        .stApp {
+            background: var(--app-bg);
+            color: var(--ink);
+            font-family: 'Space Grotesk', sans-serif;
+        }
+
+        [data-testid="stHeader"] {
+            background: linear-gradient(
+                180deg,
+                rgba(236, 248, 255, 0.9) 0%,
+                rgba(236, 248, 255, 0.78) 55%,
+                rgba(236, 248, 255, 0.35) 100%
+            ) !important;
+            border-bottom: 1px solid rgba(16, 42, 67, 0.12);
+            backdrop-filter: blur(10px);
+            min-height: 3.1rem;
+        }
+
+        [data-testid="stToolbar"],
+        [data-testid="stHeaderActionElements"] {
+            color: var(--ink-soft) !important;
+        }
+
+        [data-testid="stDecoration"] {
+            display: none !important;
+            height: 0 !important;
+        }
+
+        #MainMenu button,
+        [data-testid="stToolbar"] button {
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.72) !important;
+            border: 1px solid rgba(16, 42, 67, 0.12) !important;
+            color: var(--ink-soft) !important;
+        }
+
+        .block-container {
+            max-width: 1240px;
+            padding-top: 1.2rem;
+            padding-bottom: 2rem;
+        }
+
+        h1, h2, h3 {
+            font-family: 'Space Grotesk', sans-serif;
+            letter-spacing: 0.2px;
+            color: var(--ink);
+        }
+
+        p, li, label, .stCaption {
+            color: var(--ink-soft);
+            font-family: 'Space Grotesk', sans-serif;
+        }
+
+        [data-testid="stVerticalBlock"] > [data-testid="stVerticalBlockBorderWrapper"] {
+            border: 1px solid var(--card-border);
+            border-radius: 14px;
+            background: var(--card-bg);
+            box-shadow: 0 12px 30px rgba(16, 42, 67, 0.06);
+            backdrop-filter: blur(6px);
+        }
+
+        [data-testid="stMetricValue"],
+        [data-testid="stMarkdownContainer"] code {
+            font-family: 'IBM Plex Mono', monospace;
+        }
+
+        div[data-testid="stInfo"] {
+            background: linear-gradient(90deg, rgba(0, 119, 182, 0.14), rgba(0, 168, 150, 0.12));
+            border: 1px solid rgba(0, 119, 182, 0.22);
+            border-radius: 12px;
+            color: var(--ink);
+        }
+
+        div[data-testid="stSuccess"] {
+            border-radius: 12px;
+            border: 1px solid rgba(0, 168, 150, 0.25);
+            background: linear-gradient(90deg, rgba(0, 168, 150, 0.10), rgba(35, 194, 164, 0.10));
+        }
+
+        div[data-testid="stWarning"] {
+            border-radius: 12px;
+            border: 1px solid rgba(255, 166, 43, 0.3);
+            background: rgba(255, 245, 230, 0.72);
+        }
+
+        .stButton button,
+        .stDownloadButton button {
+            border-radius: 12px;
+            border: 1px solid rgba(0, 119, 182, 0.28);
+            color: #ffffff !important;
+            font-weight: 600;
+            background: linear-gradient(105deg, #0077b6, #00a896 92%);
+            box-shadow: 0 8px 18px rgba(0, 119, 182, 0.18);
+            transition: transform 0.12s ease, box-shadow 0.16s ease, filter 0.16s ease;
+            text-shadow: 0 1px 1px rgba(0, 0, 0, 0.18);
+        }
+
+        .stButton button *,
+        .stDownloadButton button * {
+            color: #ffffff !important;
+        }
+
+        .stButton button:hover,
+        .stDownloadButton button:hover {
+            transform: translateY(-1px);
+            filter: saturate(1.06);
+            box-shadow: 0 11px 22px rgba(0, 119, 182, 0.22);
+            color: #ffffff !important;
+        }
+
+        .stButton button:focus,
+        .stDownloadButton button:focus,
+        .stButton button:active,
+        .stDownloadButton button:active,
+        .stButton button:visited,
+        .stDownloadButton button:visited {
+            color: #ffffff !important;
+        }
+
+        .stTextInput input,
+        .stTextArea textarea,
+        .stSelectbox [data-baseweb="select"] > div,
+        .stMultiSelect [data-baseweb="select"] > div {
+            border-radius: 10px;
+            border: 1px solid rgba(16, 42, 67, 0.16);
+            background: rgba(255, 255, 255, 0.9);
+        }
+
+        [data-baseweb="tag"] {
+            background: var(--chip) !important;
+            border-radius: 999px;
+            border: 1px solid rgba(0, 119, 182, 0.24);
+            color: #0b2e4f !important;
+        }
+
+        [data-baseweb="tag"] *,
+        [data-baseweb="tag"] span,
+        [data-baseweb="tag"] div,
+        [data-baseweb="tag"] p,
+        [data-baseweb="tag"] svg {
+            color: #0b2e4f !important;
+            fill: #0b2e4f !important;
+            opacity: 1 !important;
+        }
+
+        [data-baseweb="tag"]:hover,
+        [data-baseweb="tag"]:focus,
+        [data-baseweb="tag"]:active {
+            background: #d7ecff !important;
+            color: #07263f !important;
+        }
+
+        [data-testid="stExpander"] {
+            border-radius: 12px;
+            border: 1px solid rgba(16, 42, 67, 0.14);
+            background: rgba(255, 255, 255, 0.72);
+        }
+
+        [data-testid="stDataFrame"] {
+            border-radius: 12px;
+            border: 1px solid rgba(16, 42, 67, 0.14);
+            overflow: hidden;
+        }
+
+        .st-emotion-cache-16txtl3 {
+            font-family: 'Space Grotesk', sans-serif;
+        }
+
+        @media (max-width: 768px) {
+            .block-container {
+                padding-top: 0.8rem;
+                padding-left: 0.9rem;
+                padding-right: 0.9rem;
+            }
+
+            .stButton button,
+            .stDownloadButton button {
+                width: 100%;
+            }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def stable_id(source: str, page: int, chunk_idx: int, text: str) -> str:
     h = hashlib.sha256(f"{source}|{page}|{chunk_idx}|{text}".encode("utf-8")).hexdigest()
     return h[:32]
@@ -397,6 +600,7 @@ def retrieve_chunks(
 
 def main():
     st.set_page_config(page_title="DocIntel Extract (RAG)", layout="wide")
+    apply_custom_css()
     st.title("📄 DocIntel Extract — RAG POC")
 
     DOC_EP = must_get("DOCINTEL_ENDPOINT")
